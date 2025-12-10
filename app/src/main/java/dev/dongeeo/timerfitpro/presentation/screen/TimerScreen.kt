@@ -34,15 +34,43 @@ import dev.dongeeo.timerfitpro.presentation.theme.TimerRed
 import dev.dongeeo.timerfitpro.presentation.theme.TimerYellow
 import dev.dongeeo.timerfitpro.presentation.viewmodel.TimerViewModel
 
+/**
+ * TimerScreen - Pantalla principal del temporizador
+ * 
+ * CONCEPTOS CLAVE DE JETPACK COMPOSE:
+ * 
+ * 1. @Composable: Función que describe UI de forma declarativa
+ *    - Se llama "recomposición" cuando se actualiza
+ *    - Solo se recompone cuando cambian los valores observados
+ * 
+ * 2. collectAsState(): Observa un StateFlow y causa recomposición cuando cambia
+ *    - El "by" es un delegate que simplifica el código
+ *    - Equivalente a: val timerState = remember { viewModel.timerState.collectAsState() }
+ * 
+ * 3. remember: Guarda un valor durante la recomposición
+ *    - Útil para objetos costosos que no queremos recrear
+ *    - En este caso, el Vibrator se obtiene una vez y se reutiliza
+ * 
+ * 4. LaunchedEffect: Efecto que se ejecuta cuando cambian sus dependencias
+ *    - Útil para operaciones que deben ejecutarse cuando cambia el estado
+ *    - Se cancela automáticamente si la composición se cancela
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TimerScreen(
-    onBack: () -> Unit,
-    onHistory: () -> Unit,
-    viewModel: TimerViewModel
+    onBack: () -> Unit,           // Callback para navegar atrás
+    onHistory: () -> Unit,         // Callback para ir al historial
+    viewModel: TimerViewModel      // ViewModel compartido (inyectado desde MainActivity)
 ) {
+    // OBSERVAR ESTADO: collectAsState() observa el StateFlow y causa recomposición
+    // cuando el estado cambia. El "by" es un delegate de Kotlin.
     val timerState by viewModel.timerState.collectAsState()
+    
+    // Obtener el contexto de Android (necesario para servicios del sistema)
     val context = LocalContext.current
+    
+    // REMEMBER: Guarda el Vibrator durante toda la vida del Composable
+    // No queremos obtenerlo en cada recomposición (sería ineficiente)
     val vibrator = remember {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val vibratorManager = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
@@ -53,23 +81,41 @@ fun TimerScreen(
         }
     }
     
-    // Vibrar en los últimos 5 segundos
+    // LAUNCHEDEFFECT: Efecto que se ejecuta cuando cambia timerState.timeLeftMillis
+    // 
+    // CONCEPTO: Side effects en Compose
+    // - Los efectos se ejecutan fuera del flujo de composición
+    // - Útiles para operaciones que no son parte de la UI (vibración, guardado, etc.)
+    // - Se cancela automáticamente si el Composable se descompone
+    // 
+    // VIBRACIÓN: Vibrar cuando quedan 5 segundos
+    // - Usamos un rango (5000..5100) porque el timer se actualiza cada 100ms
+    // - Esto evita vibrar múltiples veces
     LaunchedEffect(timerState.timeLeftMillis) {
         if (timerState.timeLeftMillis in 5000..5100 && timerState.isRunning) {
+            // Verificar versión de Android (VibrationEffect requiere API 26+)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 vibrator?.vibrate(VibrationEffect.createOneShot(200, VibrationEffect.DEFAULT_AMPLITUDE))
             } else {
+                // API antigua (deprecated pero necesario para compatibilidad)
                 @Suppress("DEPRECATION")
                 (vibrator as? Vibrator)?.vibrate(200)
             }
         }
     }
     
-    // Guardar sesión cuando termine (solo una vez por sesión)
+    // PREVENCIÓN DE DUPLICADOS: Guardar el estado que ya fue guardado
+    // 
+    // CONCEPTO: mutableStateOf en remember
+    // - Crea un estado que persiste durante recomposiciones
+    // - Triple almacena 3 valores: (timeLeft, isRunning, totalTime)
+    // - Usamos Triple para comparar el estado completo, no solo un valor
     var lastSavedState by remember { 
         mutableStateOf<Triple<Long, Boolean, Long>?>(null) 
     }
     
+    // LAUNCHEDEFFECT con múltiples dependencias
+    // Se ejecuta cuando cambia cualquiera de: isRunning, timeLeftMillis, totalTimeMillis
     LaunchedEffect(timerState.isRunning, timerState.timeLeftMillis, timerState.totalTimeMillis) {
         val currentState = Triple(
             timerState.timeLeftMillis,

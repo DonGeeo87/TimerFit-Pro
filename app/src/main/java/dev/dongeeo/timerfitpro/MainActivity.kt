@@ -23,31 +23,81 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+/**
+ * MainActivity - Actividad principal de la aplicación
+ * 
+ * CONCEPTOS CLAVE:
+ * 
+ * 1. @AndroidEntryPoint: Anotación de Hilt que permite inyección de dependencias
+ *    - Hilt inyecta automáticamente las dependencias marcadas con @Inject
+ *    - Debe estar en la clase Application también (TimerFitApplication)
+ * 
+ * 2. ComponentActivity: Actividad base para Jetpack Compose
+ *    - Reemplaza a AppCompatActivity cuando usas solo Compose
+ *    - Proporciona setContent {} para definir la UI
+ * 
+ * 3. lifecycleScope: Coroutine scope vinculado al ciclo de vida de la Activity
+ *    - Se cancela automáticamente cuando la Activity se destruye
+ *    - Útil para operaciones asíncronas que deben vivir mientras la Activity existe
+ * 
+ * 4. viewModel(): Obtiene una instancia del ViewModel compartida a nivel de Activity
+ *    - Esta instancia se comparte entre todas las pantallas (screens)
+ *    - Permite que el ejercicio seleccionado persista entre navegaciones
+ */
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
     
+    // INYECCIÓN DE DEPENDENCIAS con Hilt
+    // @Inject: Hilt inyecta automáticamente el ExerciseDao
+    // lateinit: Se inicializa después del constructor (por Hilt)
     @Inject
     lateinit var exerciseDao: ExerciseDao
     
+    /**
+     * onCreate() - Se llama cuando la Activity se crea
+     * 
+     * CICLO DE VIDA:
+     * onCreate() → onStart() → onResume() → [App activa] → onPause() → onStop() → onDestroy()
+     * 
+     * IMPORTANTE: En rotación de pantalla, onCreate() se llama de nuevo,
+     * pero el ViewModel NO se destruye (esa es la magia de ViewModel)
+     */
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // EdgeToEdge: UI que se extiende hasta los bordes de la pantalla
+        // (debajo de la barra de estado y navegación)
         enableEdgeToEdge()
         
         Log.d("CICLO_VIDA", "onCreate")
         
-        // Poblar base de datos con ejercicios iniciales
+        // POBLAR BASE DE DATOS: Operación asíncrona
+        // lifecycleScope.launch: Inicia una coroutine que vive mientras la Activity existe
+        // initializeExercises() es una función suspend (operación de base de datos)
         lifecycleScope.launch {
             initializeExercises()
         }
         
+        // setContent: Define la UI con Jetpack Compose
+        // Todo lo que está dentro se convierte en la UI de la Activity
         setContent {
+            // TimerFitTheme: Tema personalizado de la app (colores, tipografía, etc.)
             TimerFitTheme {
+                // Surface: Contenedor base con fondo
                 Surface(
-                    modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background
+                    modifier = Modifier.fillMaxSize(),  // Ocupa toda la pantalla
+                    color = MaterialTheme.colorScheme.background  // Color de fondo del tema
                 ) {
+                    // NAVEGACIÓN: rememberNavController crea el controlador de navegación
+                    // remember: Persiste durante recomposiciones
                     val navController = rememberNavController()
+                    
+                    // VIEWMODEL COMPARTIDO: viewModel() obtiene una instancia compartida
+                    // Esta instancia vive mientras la Activity existe
+                    // Se comparte entre todas las pantallas (ExerciseSelection, Timer, History)
                     val timerViewModel: TimerViewModel = viewModel()
+                    
+                    // NavGraph: Define todas las pantallas y rutas de navegación
                     NavGraph(
                         navController = navController,
                         timerViewModel = timerViewModel
@@ -57,37 +107,92 @@ class MainActivity : ComponentActivity() {
         }
     }
     
+    /**
+     * onStart() - La Activity es visible pero no está en primer plano
+     * 
+     * CICLO: onCreate() → onStart() → onResume()
+     */
     override fun onStart() {
         super.onStart()
         Log.d("CICLO_VIDA", "onStart")
     }
     
+    /**
+     * onResume() - La Activity está en primer plano y el usuario puede interactuar
+     * 
+     * CICLO: onStart() → onResume() → [App activa]
+     * 
+     * NOTA: El temporizador NO se reanuda automáticamente aquí.
+     * El ViewModel mantiene el estado, pero el CountDownTimer se pausó en onStop().
+     */
     override fun onResume() {
         super.onResume()
         Log.d("CICLO_VIDA", "onResume — retomando si corresponde")
     }
     
+    /**
+     * onPause() - La Activity está perdiendo el foco (otra app está apareciendo)
+     * 
+     * CICLO: [App activa] → onPause() → onStop()
+     */
     override fun onPause() {
         super.onPause()
         Log.d("CICLO_VIDA", "onPause")
     }
     
+    /**
+     * onStop() - La Activity ya no es visible
+     * 
+     * CICLO: onPause() → onStop() → [App oculta]
+     * 
+     * IMPORTANTE: Aquí es donde normalmente pausarías el temporizador.
+     * En este proyecto, el TimerEngine maneja esto internamente.
+     */
     override fun onStop() {
         super.onStop()
         Log.d("CICLO_VIDA", "onStop — temporizador pausado")
     }
     
+    /**
+     * onDestroy() - La Activity se está destruyendo
+     * 
+     * CICLO: onStop() → onDestroy() → [Activity destruida]
+     * 
+     * IMPORTANTE: 
+     * - En rotación de pantalla: onCreate() se llama de nuevo, pero ViewModel NO se destruye
+     * - En cierre de app: ViewModel se destruye y onCleared() se llama
+     */
     override fun onDestroy() {
         super.onDestroy()
         Log.d("CICLO_VIDA", "onDestroy")
     }
     
+    /**
+     * Inicializa la base de datos con ejercicios predefinidos
+     * 
+     * CONCEPTOS:
+     * 
+     * 1. suspend function: Función que puede pausar su ejecución
+     *    - Necesaria para operaciones de base de datos (Room)
+     *    - Solo puede llamarse desde coroutines
+     * 
+     * 2. .first(): Obtiene el primer valor de un Flow
+     *    - getAllExercises() retorna un Flow<List<Exercise>>
+     *    - .first() espera el primer valor y lo retorna
+     *    - Útil para operaciones únicas (no observables)
+     * 
+     * 3. Verificación de existencia: Solo insertamos si la BD está vacía
+     *    - Previene duplicados en cada inicio de app
+     *    - isNotEmpty() es más eficiente que size > 0
+     */
     private suspend fun initializeExercises() {
-        // Verificar si ya hay ejercicios
+        // Verificar si ya hay ejercicios en la base de datos
+        // .first() obtiene el primer valor del Flow (operación suspend)
         val allExercises = exerciseDao.getAllExercises().first()
         val hasExercises = allExercises.isNotEmpty()
         
-        // Si no hay ejercicios, insertarlos (lista reducida y mejorada)
+        // Solo insertar si la base de datos está vacía
+        // Esto previene duplicados si el usuario reinstala la app
         if (!hasExercises) {
             val exercises = listOf(
                 // === MULTIARTICULARES (Los más importantes) ===
